@@ -1,4 +1,4 @@
-import render, { useState } from "./render2"
+import render, { useState } from "./render"
 import createElement from "./create-element"
 
 const ReactSimple = {

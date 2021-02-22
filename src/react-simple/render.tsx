@@ -1,23 +1,50 @@
-import {
-    customWindow,
-    Element,
-    Fiber,
-    FiberRoot,
-    Props,
-} from "./types"
+import { anyObject } from "./types"
 
-// 根Fiber
-let wipRoot: null | FiberRoot = null
-// 提交给DOM的最后一棵Fiber树 用于比较
-let currentRoot: null | FiberRoot = null
-// next任务单元，render内赋予第一个nextUnitOfWork
-let nextUnitOfWork: null | Fiber | FiberRoot = null
-// 需要删除的fiber
-let deletions: Fiber[] = []
-//
-let wipFiber: null | Fiber = null
-//
+type customWindow = Window & typeof globalThis & { requestIdleCallback: any }
+type Props = {
+    [key: string]: any
+}
+type ElementTree = {
+    type: string
+    props: {
+        children: ElementTree[]
+    } & Props
+}
+type Dom = HTMLElement | Text
+type Fiber = {
+    type: string | Function | null
+    dom: Dom | null
+    child: Fiber | null
+    brother: Fiber | null
+    parent: Fiber | null
+    hooks?: any[]
+    prevFiber: null | Fiber
+    operationType: "update" | "delete" | "add" | null
+    props: {
+        children: ElementTree[]
+    } & Props
+}
+
+const isEvent = (key: string) => key.startsWith("on")
+const isProps = (key: string) => key !== "children" && !isEvent(key)
+const isNew = (prev: Props, next: Props) => (key: string) =>
+    prev[key] !== next[key]
+const isGone = (prev: Props, next: Props) => (key: string) => !(key in next)
+
+// 根fiber
+let rootFiber: Fiber | null = null
+// 上一次的rootFiber
+let prevRootFiber: Fiber | null = null
+// 正在执行的fiber
+let currentFiber: Fiber | null = null
+// 正在执行的commitFiber
+let currentCommitFiber: Fiber | null = null
+// 临时fiber，用于给hook获取对应组件（用于函数组件）
+let temporaryFiber: Fiber | null = null
+// hook id
 let hookIndex: number = 0
+// 需要删除的fiber
+let deleteFibers: Fiber[] = []
 
 // 根据Fiber创建dom
 const createDom = (fiber: Fiber) => {
@@ -26,9 +53,18 @@ const createDom = (fiber: Fiber) => {
         fiber.type == "TEXT_ELEMENT"
             ? document.createTextNode("")
             : document.createElement(fiber.type as string)
-    // 设置元素参数
+
+    // 增加新的监听器
     Object.keys(fiber.props)
-        .filter((key: string) => key !== "children")
+        .filter(isEvent)
+        .forEach((name) => {
+            const eventType = name.toLowerCase().substring(2)
+            dom.addEventListener(eventType, fiber.props[name])
+        })
+
+    // 设置新的属性
+    Object.keys(fiber.props)
+        .filter(isProps)
         .forEach((name) => {
             dom[name as "nodeValue"] = fiber.props[name]
         })
@@ -36,240 +72,284 @@ const createDom = (fiber: Fiber) => {
     return dom
 }
 
-const isEvent = (key: string) => key.startsWith("on")
-const isProperty = (key: string) => key !== "children" && !isEvent(key)
-const isNew = (prev: Props, next: Props) => (key: string) =>
-    prev[key] !== next[key]
-const isGone = (prev: Props, next: Props) => (key: string) =>
-    !(key in next)
-
-function updateDom(
-    dom: HTMLElement | Text,
-    prevProps: Props,
-    nextProps: Props
-) {
-    //Remove old or changed event listeners
-    Object.keys(prevProps)
-        .filter(isEvent)
-        .filter(
-            (key) => !(key in nextProps) || isNew(prevProps, nextProps)(key)
-        )
-        .forEach((name) => {
-            const eventType = name.toLowerCase().substring(2)
-            dom.removeEventListener(eventType, prevProps[name])
-        })
-    // Add event listeners
-    Object.keys(nextProps)
-        .filter(isEvent)
-        .filter(isNew(prevProps, nextProps))
-        .forEach((name) => {
-            const eventType = name.toLowerCase().substring(2)
-            dom.addEventListener(eventType, nextProps[name])
-        })
-    // Remove old properties
-    Object.keys(prevProps)
-        .filter(isProperty)
-        .filter(isGone(prevProps, nextProps))
-        .forEach((name) => {
-            dom[name as "nodeValue"] = ""
-        })
-    // Set new or changed properties
-    Object.keys(nextProps)
-        .filter(isProperty)
-        .filter(isNew(prevProps, nextProps))
-        .forEach((name) => {
-            dom[name as "nodeValue"] = nextProps[name]
-        })
-}
-
-function commitDeletion(fiber: Fiber, domParent: HTMLElement | Text) {
-    if (fiber.dom) {
-        domParent.removeChild(fiber.dom)
-    } else if (fiber.child) {
-        commitDeletion(fiber.child, domParent)
-    }
-}
-
-// 具体的提交工作
-const commitWork = (fiber: Fiber | null) => {
-    if (!fiber) {
-        return
-    }
-    let domParentFiber = fiber.parent
-    while (!domParentFiber.dom) {
-        domParentFiber = domParentFiber.parent
-    }
-    const domParent = domParentFiber.dom
-    if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
-        domParent.appendChild(fiber.dom)
-    } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
-        const alternateProps = fiber.alternate ? fiber.alternate.props : {}
-        updateDom(fiber.dom, alternateProps, fiber.props)
-    } else if (fiber.effectTag === "DELETION") {
-        commitDeletion(fiber, domParent)
-    }
-    commitWork(fiber.child || null)
-    commitWork(fiber.sibling || null)
-}
-// 提交根Fiber
-const commitRoot = () => {
-    if (wipRoot !== null) {
-        deletions.forEach(commitWork)
-        commitWork(wipRoot.child || null)
-        currentRoot = wipRoot
-        wipRoot = null
-    }
-}
-
-// render
-const render = (element: Element, container: HTMLElement) => {
-    console.log('element', element)
-    wipRoot = {
-        dom: container,
-        props: {
-            children: [element],
-        },
-        alternate: currentRoot,
-    }
-    deletions = []
-    nextUnitOfWork = wipRoot
-
-    // 我们requestIdleCallback用来做一个循环。您可以将其requestIdleCallback视为setTimeout，但浏览器将在主线程空闲时运行回调，而不是告诉我们何时运行。
-    // React不再使用requestIdleCallback了。现在，它使用调度程序包。但是对于此用例，它在概念上是相同的。
-    // 在浏览器空闲的时候调用
-    ;(window as customWindow).requestIdleCallback(workLoop)
-}
-
-// 获取childs的fiber
-const reconcileChildren = (
-    parentFiber: Fiber,
-    childs: Element[]
-) => {
-    console.log('a',parentFiber, childs)
+// 处理fiber获取child
+const handleFiberGetChild = (fiber: Fiber, childrens: ElementTree[]) => {
+    let len = childrens.length
     let index = 0
-    let oldFiber = parentFiber.alternate && parentFiber.alternate.child
-    let prevSibling: Fiber | null = null
-    while (index < childs.length || oldFiber != null) {
-        const element = childs[index]
-        let newFiber = null
-        const sameType = oldFiber && element && element.type == oldFiber.type
-        if (sameType) {
+    let prevChild: Fiber | null = null
+    let childPrevFiber = fiber.prevFiber ? fiber.prevFiber.child : null
+    while (index < len) {
+        let childElement = childrens[index]
+        let newFiber: null | Fiber = null
+        const sameType =
+            childPrevFiber &&
+            childElement &&
+            childElement.type == childPrevFiber.type
+        if (childElement && sameType && childPrevFiber) {
             newFiber = {
-                type: oldFiber ? oldFiber.type : "",
-                props: element.props,
-                dom: oldFiber ? oldFiber.dom : null,
-                parent: parentFiber,
-                alternate: oldFiber,
-                effectTag: "UPDATE",
+                type: childPrevFiber.type,
+                props: childElement.props,
+                parent: fiber,
+                dom: childPrevFiber.dom,
+                child: null,
+                brother: null,
+                prevFiber: childPrevFiber,
+                operationType: "update",
             }
         }
-        if (element && !sameType) {
+        if (childElement && !sameType) {
             newFiber = {
-                type: element.type,
-                props: element.props,
+                type: childElement.type,
+                props: childElement.props,
+                parent: fiber,
                 dom: null,
-                parent: parentFiber,
-                alternate: null,
-                effectTag: "PLACEMENT",
+                child: null,
+                brother: null,
+                prevFiber: null,
+                operationType: "add",
             }
         }
-        if (oldFiber && !sameType) {
-            oldFiber.effectTag = "DELETION"
-            deletions.push(oldFiber)
+        if (childPrevFiber && !sameType) {
+            childPrevFiber.operationType = "delete"
+            deleteFibers.push(childPrevFiber)
         }
-        if (oldFiber) {
-            oldFiber = oldFiber.sibling
+        if (childPrevFiber) {
+            childPrevFiber = childPrevFiber.brother
         }
         if (index === 0) {
-            parentFiber.child = newFiber as Fiber
-        } else if (prevSibling !== null) {
-            prevSibling.sibling = newFiber as Fiber
+            fiber.child = newFiber
+        } else if (prevChild !== null) {
+            prevChild.brother = newFiber
         }
-        prevSibling = newFiber as Fiber
+        prevChild = newFiber
         index++
     }
 }
 
-function updateFunctionComponent(fiber: Fiber) {
-    wipFiber = fiber
+// 处理函数组件
+const handleFunctionComponent = (fiber: Fiber) => {
     hookIndex = 0
-    wipFiber.hooks = []
+    fiber.hooks = []
+    temporaryFiber = fiber
     const children = [(fiber.type as Function)(fiber.props)]
-    reconcileChildren(fiber, children)
+    handleFiberGetChild(fiber, children)
 }
 
-function updateHostComponent(fiber: Fiber) {
+// 处理html原生组件
+const handleHostComponent = (fiber: Fiber) => {
     if (!fiber.dom) {
         fiber.dom = createDom(fiber)
     }
-    reconcileChildren(fiber, fiber.props.children)
+    handleFiberGetChild(fiber, fiber.props.children)
 }
 
-// 创建新的fiber，获得next工作单元（fiber）
-const performUnitOfWork = (outFiber: Fiber | FiberRoot) => {
-    const fiber = outFiber as Fiber
-    const isFunctionComponent = fiber.type instanceof Function
-    if (isFunctionComponent) {
-        updateFunctionComponent(fiber)
-    } else {
-        updateHostComponent(fiber)
-    }
-
+// 返回的下一个fiber
+const returnNextFiber = (fiber: Fiber) => {
     if (fiber.child) {
         return fiber.child
     }
-    let nextFiber = fiber
+    let nextFiber: Fiber | null = fiber
     while (nextFiber) {
-        if (nextFiber.sibling) {
-            return nextFiber.sibling
+        if (nextFiber.brother) {
+            return nextFiber.brother
         }
         nextFiber = nextFiber.parent
     }
+
     return null
 }
 
-// 浏览器空闲时执行构建 fiber tree
-function workLoop(deadline: any) {
-    let shouldYield = false
-    // 执行直到 deadline
-    while (nextUnitOfWork && !shouldYield) {
-        nextUnitOfWork = performUnitOfWork(nextUnitOfWork)
-        shouldYield = deadline.timeRemaining() < 1
+// 根据传入的fiber获取新的fiber
+const getNextFiber = (fiber: Fiber) => {
+    // 是否是函数组件
+    const isFunctionComponent = fiber.type instanceof Function
+
+    if (isFunctionComponent) {
+        handleFunctionComponent(fiber)
+    } else {
+        handleHostComponent(fiber)
     }
-    if (!nextUnitOfWork && wipRoot) {
-        commitRoot()
+
+    return returnNextFiber(fiber)
+}
+
+const handleUpdate = (fiber: Fiber) => {
+    const dom = fiber.dom
+    const prevProps: anyObject = fiber.prevFiber?.props || {}
+    const nextProps = fiber.props
+    if (dom) {
+        // 移除旧的监听器
+        Object.keys(prevProps)
+            .filter(isEvent)
+            .filter(
+                (key) => !(key in nextProps) || isNew(prevProps, nextProps)(key)
+            )
+            .forEach((name) => {
+                const eventType = name.toLowerCase().substring(2)
+                dom.removeEventListener(eventType, prevProps[name])
+            })
+        // 增加新的监听器
+        Object.keys(nextProps)
+            .filter(isEvent)
+            .filter(isNew(prevProps, nextProps))
+            .forEach((name) => {
+                const eventType = name.toLowerCase().substring(2)
+                dom.addEventListener(eventType, nextProps[name])
+            })
+        // 移除旧的属性
+        Object.keys(prevProps)
+            .filter(isProps)
+            .filter(isGone(prevProps, nextProps))
+            .forEach((name) => {
+                dom[name as "nodeValue"] = ""
+            })
+        // 设置新的属性
+        Object.keys(nextProps)
+            .filter(isProps)
+            .filter(isNew(prevProps, nextProps))
+            .forEach((name) => {
+                dom[name as "nodeValue"] = nextProps[name]
+            })
     }
+}
+
+const handleDelete = (fiber: Fiber, parentDom: HTMLElement | Text) => {
+    if (fiber.dom) {
+        parentDom.removeChild(fiber.dom)
+    } else if (fiber.child) {
+        handleDelete(fiber.child, parentDom)
+    }
+}
+
+const handleAdd = (fiber: Fiber, parentDom: HTMLElement | Text) => {
+    if (fiber.dom !== null) {
+        parentDom.appendChild(fiber.dom)
+    }
+}
+
+const handleFiber = (fiber: Fiber) => {
+    let parentFiber = fiber.parent
+    while (parentFiber !== null && parentFiber.dom === null) {
+        parentFiber = parentFiber.parent
+    }
+    if (parentFiber !== null && parentFiber.dom !== null) {
+        switch (fiber.operationType) {
+            case "add":
+                handleAdd(fiber, parentFiber.dom)
+                break
+            case "update":
+                handleUpdate(fiber)
+                break
+            case "delete":
+                handleDelete(fiber, parentFiber.dom)
+                break
+            default:
+                break
+        }
+    }
+}
+
+const getNextDeleteFibers = (fibers: Fiber[]) => {
+    if (fibers.length > 0) {
+        const theFiber = fibers.shift()
+        handleFiber(theFiber as Fiber)
+    }
+    return fibers
+}
+
+// 提交任务，把dom循环挂载到father上
+const getNextCommitFiber = (fiber: Fiber) => {
+    handleFiber(fiber)
+    return returnNextFiber(fiber)
+}
+
+// 任务循环，循环处理fiber
+const workLoop = (deadline: any) => {
+    let shouldStop = deadline.timeRemaining() < 1
+    // 如果有执行fiber，则执行当前fiber获取child等，返回下一个fiber
+    if (currentFiber !== null && !shouldStop) {
+        currentFiber = getNextFiber(currentFiber)
+        shouldStop = deadline.timeRemaining() < 1
+    }
+    // 如果没有执行fiber，并且存在根fiber，全部fiber已经处理完毕，把处理好的根fiber传递给 执行commitFiber
+    if (currentFiber === null && rootFiber !== null) {
+        currentCommitFiber = rootFiber.child
+        prevRootFiber = rootFiber
+        rootFiber = null
+    }
+    // 如果有执行 commit fiber,则执行 提交
+    if (currentCommitFiber !== null && !shouldStop) {
+        if (deleteFibers.length > 0) {
+            deleteFibers = getNextDeleteFibers(deleteFibers)
+        } else {
+            currentCommitFiber = getNextCommitFiber(currentCommitFiber)
+        }
+        shouldStop = deadline.timeRemaining() < 1
+    }
+
     // 继续监听下一个空闲时间
     ;(window as customWindow).requestIdleCallback(workLoop)
 }
 
-function useState(initial: any) {
+// 初始化
+const initStart = (newFiber: Fiber) => {
+    // 设置根fiber
+    rootFiber = newFiber
+    // 清空删除的fiber
+    deleteFibers = []
+    // 将根fiber设置为执行fiber
+    currentFiber = rootFiber
+}
+
+// render函数
+const render = (elementTree: ElementTree, container: HTMLElement) => {
+    initStart({
+        type: null,
+        dom: container,
+        child: null,
+        brother: null,
+        parent: null,
+        prevFiber: null,
+        operationType: null,
+        props: {
+            children: [elementTree],
+        },
+    })
+    // 开始监听
+    ;(window as customWindow).requestIdleCallback(workLoop)
+}
+
+const useState = (initialValue: any) => {
+    console.log(temporaryFiber)
     const oldHook =
-        wipFiber &&
-        wipFiber.alternate &&
-        wipFiber.alternate.hooks &&
-        wipFiber.alternate.hooks[hookIndex]
+        temporaryFiber &&
+        temporaryFiber.prevFiber &&
+        temporaryFiber.prevFiber.hooks &&
+        temporaryFiber.prevFiber.hooks[hookIndex]
+    const actions = oldHook ? oldHook.queue : []
     const hook = {
-        state: oldHook ? oldHook.state : initial,
+        state: oldHook ? oldHook.state : initialValue,
         ["queue" as string]: [],
     }
-    const actions = oldHook ? oldHook.queue : []
     actions.forEach((action: Function) => {
         hook.state = action(hook.state)
     })
     const setState = (action: Function) => {
         hook.queue.push(action)
-        if (currentRoot) {
-            wipRoot = {
-                dom: currentRoot.dom,
-                props: currentRoot.props,
-                alternate: currentRoot,
-            }
-            nextUnitOfWork = wipRoot
+        if (prevRootFiber) {
+            initStart({
+                dom: prevRootFiber.dom,
+                props: prevRootFiber.props,
+                prevFiber: prevRootFiber,
+                type: null,
+                child: null,
+                brother: null,
+                parent: null,
+                operationType: null,
+            })
         }
-        deletions = []
     }
-    wipFiber && wipFiber.hooks && wipFiber.hooks.push(hook)
+    temporaryFiber && temporaryFiber.hooks && temporaryFiber.hooks.push(hook)
     hookIndex++
     return [hook.state, setState]
 }

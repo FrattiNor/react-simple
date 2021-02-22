@@ -10,7 +10,7 @@ function Counter() {
 
     return (
         <h1>
-            <a onclick={() => setState((c) => c + 1)}>Count: </a>
+            <a onClick={() => setState((c: number) => c + 1)}>Count: </a>
             <span>{state}</span>
         </h1>
     )
