@@ -1,4 +1,5 @@
 import { anyObject } from "./types"
+import "requestidlecallback-polyfill"
 
 type customWindow = Window & typeof globalThis & { requestIdleCallback: any }
 type Props = {
