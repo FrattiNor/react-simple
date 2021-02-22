@@ -17,12 +17,13 @@ function Counter() {
 }
 
 function Counter2() {
-    // const [state, setState] = useState(2)
-    const state = 2
+    const [visible, setVisible] = useState(true)
+
     return (
         <h2>
-            <div>Count: </div>
-            <div>{state}</div>
+            <a onClick={() => setVisible((v: boolean) => !v)}>Show: </a>
+            <span>{visible ? "YES " : "NO "}</span>
+            {visible && <span>123</span>}
         </h2>
     )
 }

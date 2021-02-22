@@ -1,13 +1,24 @@
 import { createElementFun, createTextElementFun } from "./types"
 
 // createTextElement
-const createTextElement: createTextElementFun = (text) => ({
-    type: "TEXT_ELEMENT",
-    props: {
-        nodeValue: text,
-        children: [],
-    },
-})
+const createTextElement: createTextElementFun = (text) => {
+    if(text) {
+        return {
+            type: "TEXT_ELEMENT",
+            props: {
+                nodeValue: text,
+                children: [],
+            },
+        }
+    }
+    return {
+        type: "FALSE_ELEMENT",
+            props: {
+                nodeValue: '',
+                children: [],
+            },
+    }
+}
 
 // createElement AST抽象语法树
 const createElement: createElementFun = (type, props, ...children) => ({

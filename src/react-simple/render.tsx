@@ -15,7 +15,7 @@ type Fiber = {
     type: string | Function | null
     dom: Dom | null
     child: Fiber | null
-    brother: Fiber | null
+    nextBrother: Fiber | null
     parent: Fiber | null
     hooks?: any[]
     prevFiber: null | Fiber
@@ -49,10 +49,19 @@ let deleteFibers: Fiber[] = []
 // 根据Fiber创建dom
 const createDom = (fiber: Fiber) => {
     // 创建元素
-    const dom =
-        fiber.type == "TEXT_ELEMENT"
-            ? document.createTextNode("")
-            : document.createElement(fiber.type as string)
+    let dom: HTMLElement | Text
+
+    switch (fiber.type) {
+        case "TEXT_ELEMENT":
+            dom = document.createTextNode("")
+            break
+        case "FALSE_ELEMENT":
+            dom = document.createTextNode("")
+            break
+        default:
+            dom = document.createElement(fiber.type as string)
+            break
+    }
 
     // 增加新的监听器
     Object.keys(fiber.props)
@@ -73,11 +82,13 @@ const createDom = (fiber: Fiber) => {
 }
 
 // 处理fiber获取child
-const handleFiberGetChild = (fiber: Fiber, childrens: ElementTree[]) => {
+const handleFiberGetChild = (parentFiber: Fiber, childrens: ElementTree[]) => {
     let len = childrens.length
     let index = 0
     let prevChild: Fiber | null = null
-    let childPrevFiber = fiber.prevFiber ? fiber.prevFiber.child : null
+    let childPrevFiber = parentFiber.prevFiber
+        ? parentFiber.prevFiber.child
+        : null
     while (index < len) {
         let childElement = childrens[index]
         let newFiber: null | Fiber = null
@@ -89,10 +100,10 @@ const handleFiberGetChild = (fiber: Fiber, childrens: ElementTree[]) => {
             newFiber = {
                 type: childPrevFiber.type,
                 props: childElement.props,
-                parent: fiber,
+                parent: parentFiber,
                 dom: childPrevFiber.dom,
                 child: null,
-                brother: null,
+                nextBrother: null,
                 prevFiber: childPrevFiber,
                 operationType: "update",
             }
@@ -101,10 +112,10 @@ const handleFiberGetChild = (fiber: Fiber, childrens: ElementTree[]) => {
             newFiber = {
                 type: childElement.type,
                 props: childElement.props,
-                parent: fiber,
+                parent: parentFiber,
                 dom: null,
                 child: null,
-                brother: null,
+                nextBrother: null,
                 prevFiber: null,
                 operationType: "add",
             }
@@ -114,12 +125,12 @@ const handleFiberGetChild = (fiber: Fiber, childrens: ElementTree[]) => {
             deleteFibers.push(childPrevFiber)
         }
         if (childPrevFiber) {
-            childPrevFiber = childPrevFiber.brother
+            childPrevFiber = childPrevFiber.nextBrother
         }
         if (index === 0) {
-            fiber.child = newFiber
+            parentFiber.child = newFiber
         } else if (prevChild !== null) {
-            prevChild.brother = newFiber
+            prevChild.nextBrother = newFiber
         }
         prevChild = newFiber
         index++
@@ -131,6 +142,7 @@ const handleFunctionComponent = (fiber: Fiber) => {
     hookIndex = 0
     fiber.hooks = []
     temporaryFiber = fiber
+    console.log('fiber', fiber)
     const children = [(fiber.type as Function)(fiber.props)]
     handleFiberGetChild(fiber, children)
 }
@@ -150,8 +162,8 @@ const returnNextFiber = (fiber: Fiber) => {
     }
     let nextFiber: Fiber | null = fiber
     while (nextFiber) {
-        if (nextFiber.brother) {
-            return nextFiber.brother
+        if (nextFiber.nextBrother) {
+            return nextFiber.nextBrother
         }
         nextFiber = nextFiber.parent
     }
@@ -267,18 +279,19 @@ const getNextCommitFiber = (fiber: Fiber) => {
 const workLoop = (deadline: any) => {
     let shouldStop = deadline.timeRemaining() < 1
     // 如果有执行fiber，则执行当前fiber获取child等，返回下一个fiber
-    if (currentFiber !== null && !shouldStop) {
+    while (currentFiber !== null && !shouldStop) {
         currentFiber = getNextFiber(currentFiber)
         shouldStop = deadline.timeRemaining() < 1
     }
     // 如果没有执行fiber，并且存在根fiber，全部fiber已经处理完毕，把处理好的根fiber传递给 执行commitFiber
     if (currentFiber === null && rootFiber !== null) {
-        currentCommitFiber = rootFiber.child
+        currentCommitFiber = rootFiber
         prevRootFiber = rootFiber
         rootFiber = null
+        shouldStop = deadline.timeRemaining() < 1
     }
     // 如果有执行 commit fiber,则执行 提交
-    if (currentCommitFiber !== null && !shouldStop) {
+    while (currentCommitFiber !== null && !shouldStop) {
         if (deleteFibers.length > 0) {
             deleteFibers = getNextDeleteFibers(deleteFibers)
         } else {
@@ -287,8 +300,15 @@ const workLoop = (deadline: any) => {
         shouldStop = deadline.timeRemaining() < 1
     }
 
-    // 继续监听下一个空闲时间
-    ;(window as customWindow).requestIdleCallback(workLoop)
+    if (
+        shouldStop ||
+        (currentFiber === null &&
+            rootFiber === null &&
+            currentCommitFiber === null)
+    ) {
+        // 继续监听下一个空闲时间
+        ;(window as customWindow).requestIdleCallback(workLoop)
+    }
 }
 
 // 初始化
@@ -307,7 +327,7 @@ const render = (elementTree: ElementTree, container: HTMLElement) => {
         type: null,
         dom: container,
         child: null,
-        brother: null,
+        nextBrother: null,
         parent: null,
         prevFiber: null,
         operationType: null,
@@ -320,7 +340,6 @@ const render = (elementTree: ElementTree, container: HTMLElement) => {
 }
 
 const useState = (initialValue: any) => {
-    console.log(temporaryFiber)
     const oldHook =
         temporaryFiber &&
         temporaryFiber.prevFiber &&
@@ -343,7 +362,7 @@ const useState = (initialValue: any) => {
                 prevFiber: prevRootFiber,
                 type: null,
                 child: null,
-                brother: null,
+                nextBrother: null,
                 parent: null,
                 operationType: null,
             })
