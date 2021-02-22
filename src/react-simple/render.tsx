@@ -142,7 +142,6 @@ const handleFunctionComponent = (fiber: Fiber) => {
     hookIndex = 0
     fiber.hooks = []
     temporaryFiber = fiber
-    console.log('fiber', fiber)
     const children = [(fiber.type as Function)(fiber.props)]
     handleFiberGetChild(fiber, children)
 }
@@ -329,7 +328,7 @@ const render = (elementTree: ElementTree, container: HTMLElement) => {
         child: null,
         nextBrother: null,
         parent: null,
-        prevFiber: null,
+        prevFiber: prevRootFiber,
         operationType: null,
         props: {
             children: [elementTree],
